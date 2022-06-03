@@ -6,7 +6,7 @@ import "@openzeppelin/contracts/access/Ownable.sol";
 import "./lib/StringUtils.sol";
 import "./Constants.sol";
 import "./Shared.sol";
-import "./DixelClubV2NFT.sol";
+import "./IDixelClubV2NFT.sol";
 
 /**
 * @title Dixel Club (V2) NFT Factory
@@ -14,14 +14,26 @@ import "./DixelClubV2NFT.sol";
 * Create an ERC721 Dixel Club NFTs using proxy pattern to save gas
 */
 contract DixelClubV2Factory is Constants, Ownable {
+    error DixelClubV2Factory__BlankedName();
+    error DixelClubV2Factory__BlankedSymbol();
+    error DixelClubV2Factory__DescriptionTooLong();
+    error DixelClubV2Factory__InvalidMaxSupply();
+    error DixelClubV2Factory__InvalidRoyalty();
+    error DixelClubV2Factory__NameContainedMalicious();
+    error DixelClubV2Factory__SymbolContainedMalicious();
+    error DixelClubV2Factory__DescriptionContainedMalicious();
+    error DixelClubV2Factory__InvalidCreationFee();
+    error DixelClubV2Factory__ZeroAddress();
+    error DixelClubV2Factory__InvalidFee();
+
     /**
      *  EIP-1167: Minimal Proxy Contract - ERC721 Token implementation contract
      *  REF: https://github.com/optionality/clone-factory
      */
-    address payable public nftImplementation;
+    address public nftImplementation;
 
-    address public beneficiary = address(0x82CA6d313BffE56E9096b16633dfD414148D66b1);
-    uint256 public creationFee = 2e16; // 0.02 ETH (~$50)
+    address payable public beneficiary = payable(0x82CA6d313BffE56E9096b16633dfD414148D66b1);
+    uint256 public creationFee = 0.02 ether; // 0.02 ETH (~$50)
     uint256 public mintingFee = 500; // 5%;
 
     // Array of all created nft collections
@@ -29,8 +41,8 @@ contract DixelClubV2Factory is Constants, Ownable {
 
     event CollectionCreated(address indexed nftAddress, string name, string symbol);
 
-    constructor() {
-        nftImplementation = payable(address(new DixelClubV2NFT()));
+    constructor(address DixelClubV2NFTImpl) {
+        nftImplementation = DixelClubV2NFTImpl;
     }
 
     function _createClone(address target) private returns (address payable result) {
@@ -45,34 +57,35 @@ contract DixelClubV2Factory is Constants, Ownable {
     }
 
     function createCollection(
-        string memory name,
-        string memory symbol,
-        Shared.MetaData memory metaData,
-        uint24[PALETTE_SIZE] memory palette,
-        uint8[TOTAL_PIXEL_COUNT] memory pixels
-    ) external payable returns (address payable) {
-        require(bytes(name).length > 0, "NAME_CANNOT_BE_BLANK");
-        require(bytes(symbol).length > 0, "SYMBOL_CANNOT_BE_BLANK");
-        require(bytes(metaData.description).length <= 1000, "DESCRIPTION_TOO_LONG"); // ~900 gas per character
-        require(metaData.maxSupply > 0 && metaData.maxSupply <= MAX_SUPPLY, "INVALID_MAX_SUPPLY");
-        require(metaData.royaltyFriction <= MAX_ROYALTY_FRACTION, "INVALID_ROYALTY_FRICTION");
+        string calldata name,
+        string calldata symbol,
+        string calldata description,
+        Shared.MetaData calldata metaData,
+        uint24[PALETTE_SIZE] calldata palette,
+        uint8[TOTAL_PIXEL_COUNT] calldata pixels
+    ) external payable returns (address) {
+        if(bytes(name).length == 0) revert DixelClubV2Factory__BlankedName();
+        if(bytes(symbol).length == 0) revert DixelClubV2Factory__BlankedSymbol();
+        if(bytes(description).length > 1000) revert DixelClubV2Factory__DescriptionTooLong(); // ~900 gas per character
+        if(metaData.maxSupply == 0 || metaData.maxSupply > MAX_SUPPLY) revert DixelClubV2Factory__InvalidMaxSupply();
+        if(metaData.royaltyFriction > MAX_ROYALTY_FRACTION) revert DixelClubV2Factory__InvalidRoyalty();
 
         // Validate `symbol`, `name` and `description` to ensure generateJSON() creates a valid JSON
-        require(!StringUtils.contains(name, 0x22), "NAME_CONTAINS_MALICIOUS_CHARACTER");
-        require(!StringUtils.contains(symbol, 0x22), "SYMBOL_CONTAINS_MALICIOUS_CHARACTER");
-        require(!StringUtils.contains(metaData.description, 0x22), "DESCRIPTION_CONTAINS_MALICIOUS_CHARACTER");
+        if(StringUtils.contains(name, 0x22)) revert DixelClubV2Factory__NameContainedMalicious();
+        if(StringUtils.contains(symbol, 0x22)) revert DixelClubV2Factory__SymbolContainedMalicious();
+        if(StringUtils.contains(description, 0x22)) revert DixelClubV2Factory__DescriptionContainedMalicious();
 
         if (creationFee > 0) {
-            require(msg.value == creationFee, "INVALID_CREATION_FEE_SENT");
+            if(msg.value != creationFee) revert DixelClubV2Factory__InvalidCreationFee(); 
 
             // Send fee to the beneficiary
             (bool sent, ) = beneficiary.call{ value: creationFee }("");
-            require(sent, "CREATION_FEE_TRANSFER_FAILED");
+            require(sent);
         }
 
-        address payable nftAddress = _createClone(nftImplementation);
-        DixelClubV2NFT newNFT = DixelClubV2NFT(nftAddress);
-        newNFT.init(msg.sender, name, symbol, metaData, palette, pixels);
+        address nftAddress = _createClone(nftImplementation);
+        IDixelClubV2NFT newNFT = IDixelClubV2NFT(nftAddress);
+        newNFT.init(msg.sender, name, symbol, description, metaData, palette, pixels);
 
         collections.push(nftAddress);
 
@@ -84,13 +97,13 @@ contract DixelClubV2Factory is Constants, Ownable {
     // MARK: Admin functions
 
     // This will update NFT contract implementaion and it won't affect existing collections
-    function updateImplementation(address payable newImplementation) external onlyOwner {
+    function updateImplementation(address newImplementation) external onlyOwner {
         nftImplementation = newImplementation;
     }
 
-    function updateBeneficiary(address newAddress, uint256 newCreationFee, uint256 newMintingFee) external onlyOwner {
-        require(newAddress != address(0), "BENEFICIARY_CANNOT_BE_NULL");
-        require(newMintingFee <= FRICTION_BASE, "INVALID_FEE_FRICTION");
+    function updateBeneficiary(address payable newAddress, uint256 newCreationFee, uint256 newMintingFee) external onlyOwner {
+        if(newAddress == address(0)) revert DixelClubV2Factory__ZeroAddress();
+        if(newMintingFee > FRICTION_BASE) revert DixelClubV2Factory__InvalidFee();
 
         beneficiary = newAddress;
         mintingFee = newMintingFee;

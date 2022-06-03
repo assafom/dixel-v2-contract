@@ -11,6 +11,7 @@ const TEST_INPUT = JSON.parse(fs.readFileSync(`${__dirname}/fixtures/test-input.
 const TEST_DATA = {
   name: 'Test Collection',
   symbol: 'TESTNFT',
+  description: 'This is a test collection',
   metaData: {
     whitelistOnly: false,
     hidden: false,
@@ -18,7 +19,6 @@ const TEST_DATA = {
     royaltyFriction: 500, // 5%
     mintingBeginsFrom: 0, // start immediately
     mintingCost: ether("1"),
-    description: 'This is a test collection',
   }
 };
 
@@ -26,13 +26,15 @@ contract("DixelClubV2Factory", function(accounts) {
   const [ deployer, alice, bob ] = accounts;
 
   beforeEach(async function() {
-    this.factory = await DixelClubV2Factory.new();
+    this.impl = await DixelClubV2NFT.new();
+    this.factory = await DixelClubV2Factory.new(this.impl.address);
     this.creationFee = await this.factory.creationFee();
     this.beneficiary = await this.factory.beneficiary();
 
     this.testParams = [
       TEST_DATA.name,
       TEST_DATA.symbol,
+      TEST_DATA.description,
       Object.values(TEST_DATA.metaData),
       TEST_INPUT.palette,
       TEST_INPUT.pixels,
@@ -49,9 +51,9 @@ contract("DixelClubV2Factory", function(accounts) {
       assert.notEqual(await this.factory.nftImplementation(), ZERO_ADDRESS);
     });
 
-    it("nft implementation should have its factory contract as original owner", async function() {
+    it("nft implementation should have its deployer as original owner", async function() {
       const nft = await DixelClubV2NFT.at(await this.factory.nftImplementation());
-      expect(await nft.owner()).to.equal(this.factory.address);
+      expect(await nft.owner()).to.equal(deployer);
     });
   });
 
@@ -122,13 +124,13 @@ contract("DixelClubV2Factory", function(accounts) {
     it("should not be able to set beneficiary as zero address", async function() {
       await expectRevert(
         this.factory.updateBeneficiary(ZERO_ADDRESS, "0", "0"),
-        "BENEFICIARY_CANNOT_BE_NULL"
+        "DixelClubV2Factory__ZeroAddress"
       );
     });
     it("should not be able to set mintingFee over base friction (10,000)", async function() {
       await expectRevert(
         this.factory.updateBeneficiary(bob, "0", "10001"),
-        "INVALID_FEE_FRICTION"
+        "DixelClubV2Factory__InvalidFee"
       );
     });
   });
@@ -136,40 +138,40 @@ contract("DixelClubV2Factory", function(accounts) {
   describe("create a collection - validation", function() {
     it("should check if name is blank", async function() {
       this.testParams[0] = "";
-      await expectRevert(this.factory.createCollection(...this.testParams), "NAME_CANNOT_BE_BLANK");
+      await expectRevert(this.factory.createCollection(...this.testParams), "DixelClubV2Factory__BlankedName");
     });
     it("should check if symbol is blank", async function() {
       this.testParams[1] = "";
-      await expectRevert(this.factory.createCollection(...this.testParams), "SYMBOL_CANNOT_BE_BLANK");
+      await expectRevert(this.factory.createCollection(...this.testParams), "DixelClubV2Factory__BlankedSymbol");
     });
     it("should check if maxSupply is over 0", async function() {
-      this.testParams[2][2] = 0;
-      await expectRevert(this.factory.createCollection(...this.testParams), "INVALID_MAX_SUPPLY");
+      this.testParams[3][2] = 0;
+      await expectRevert(this.factory.createCollection(...this.testParams), "DixelClubV2Factory__InvalidMaxSupply");
     });
     it("should check if maxSupply is less than the max value", async function() {
-      this.testParams[2][2] = (await this.factory.MAX_SUPPLY()).add(new BN("1"));
-      await expectRevert(this.factory.createCollection(...this.testParams), "INVALID_MAX_SUPPLY");
+      this.testParams[3][2] = (await this.factory.MAX_SUPPLY()).add(new BN("1"));
+      await expectRevert(this.factory.createCollection(...this.testParams), "DixelClubV2Factory__InvalidMaxSupply");
     });
     it("should check if royaltyFriction is less than the max value", async function() {
-      this.testParams[2][3] = (await this.factory.MAX_ROYALTY_FRACTION()).add(new BN("1"));
-      await expectRevert(this.factory.createCollection(...this.testParams), "INVALID_ROYALTY_FRICTION");
+      this.testParams[3][3] = (await this.factory.MAX_ROYALTY_FRACTION()).add(new BN("1"));
+      await expectRevert(this.factory.createCollection(...this.testParams), "DixelClubV2Factory__InvalidRoyalty");
     });
     it("should check if description is over 1,000 characters", async function() {
-      this.testParams[2][6] = [...Array(1001)].map(() => Math.random().toString(36)[2]).join('');
-      await expectRevert(this.factory.createCollection(...this.testParams), "DESCRIPTION_TOO_LONG");
+      this.testParams[2] = [...Array(1001)].map(() => Math.random().toString(36)[2]).join('');
+      await expectRevert(this.factory.createCollection(...this.testParams), "DixelClubV2Factory__DescriptionTooLong");
     });
     it("should check if symbol contains a quote", async function() {
       this.testParams[1] = 'SYMBOL"';
-      await expectRevert(this.factory.createCollection(...this.testParams), "SYMBOL_CONTAINS_MALICIOUS_CHARACTER");
+      await expectRevert(this.factory.createCollection(...this.testParams), "DixelClubV2Factory__SymbolContainedMalicious");
     });
     it("should check if description contains a quote", async function() {
-      this.testParams[2][6] = 'what ever ""';
-      await expectRevert(this.factory.createCollection(...this.testParams), "DESCRIPTION_CONTAINS_MALICIOUS_CHARACTER");
+      this.testParams[2] = 'what ever ""';
+      await expectRevert(this.factory.createCollection(...this.testParams), "DixelClubV2Factory__DescriptionContainedMalicious");
     });
 
     it("should check if the correct creation fee has sent", async function() {
-      this.testParams[5].value = this.creationFee.sub(new BN("1"));
-      await expectRevert(this.factory.createCollection(...this.testParams), "INVALID_CREATION_FEE_SENT");
+      this.testParams[6].value = this.creationFee.sub(new BN("1"));
+      await expectRevert(this.factory.createCollection(...this.testParams), "DixelClubV2Factory__InvalidCreationFee");
     });
   });
 
@@ -242,7 +244,7 @@ contract("DixelClubV2Factory", function(accounts) {
         expect(this.metaData.mintingCost_).to.be.bignumber.equal(String(TEST_DATA.metaData.mintingCost));
       });
       it("description", async function() {
-        expect(this.metaData.description_).to.equal(TEST_DATA.metaData.description);
+        expect(this.metaData.description_).to.equal(TEST_DATA.description);
       });
       it("owner", async function() {
         expect(this.metaData.owner_).to.equal(alice);
